@@ -26,12 +26,29 @@ function jsonResponse(data, status = 200) {
     {
       status,
       headers: {
-        "Content-Type":
-          "application/json; charset=utf-8",
+        "Content-Type": "application/json; charset=utf-8",
         "Cache-Control": "no-store",
       },
     }
   );
+}
+
+function escapeHtml(value = "") {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function moedaBRL(value) {
+  const numero = Number(value || 0);
+
+  return numero.toLocaleString("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+  });
 }
 
 // ============================================================
@@ -43,15 +60,11 @@ async function shopee(query) {
   const secret = env("SHOPEE_SECRET");
 
   if (!appId) {
-    throw new Error(
-      "SHOPEE_APP_ID não configurado."
-    );
+    throw new Error("SHOPEE_APP_ID não configurado.");
   }
 
   if (!secret) {
-    throw new Error(
-      "SHOPEE_SECRET não configurado."
-    );
+    throw new Error("SHOPEE_SECRET não configurado.");
   }
 
   const payload = JSON.stringify({
@@ -73,8 +86,7 @@ async function shopee(query) {
       method: "POST",
 
       headers: {
-        "Content-Type":
-          "application/json",
+        "Content-Type": "application/json",
 
         Authorization:
           `SHA256 Credential=${appId}, Timestamp=${timestamp}, Signature=${signature}`,
@@ -130,9 +142,7 @@ async function buscarOfertas(
   limit = 50
 ) {
   const keywordArgument = keyword
-    ? `keyword: ${JSON.stringify(
-        keyword
-      )},`
+    ? `keyword: ${JSON.stringify(keyword)},`
     : "";
 
   const sortType = Number(
@@ -192,13 +202,9 @@ async function gerarLinkCurto(url) {
       mutation {
         generateShortLink(
           input: {
-            originUrl: ${JSON.stringify(
-              url
-            )},
+            originUrl: ${JSON.stringify(url)},
             subIds: [
-              ${JSON.stringify(
-                subId
-              )}
+              ${JSON.stringify(subId)}
             ]
           }
         ) {
@@ -211,8 +217,8 @@ async function gerarLinkCurto(url) {
       await shopee(query);
 
     return (
-      data?.generateShortLink
-        ?.shortLink || url
+      data?.generateShortLink?.shortLink ||
+      url
     );
   } catch (error) {
     console.error(
@@ -274,9 +280,7 @@ Responda SOMENTE com a frase ou PULAR.
 
 let ultimoModeloFuncionando = "";
 
-async function analisarProduto(
-  produto
-) {
+async function analisarProduto(produto) {
   const apiKey =
     env("GEMINI_API_KEY");
 
@@ -290,105 +294,4 @@ async function analisarProduto(
 
   const dados = [
     `Produto: ${produto.productName}`,
-    `Desconto: ${Math.round(
-      Number(
-        produto.priceDiscountRate || 0
-      )
-    )}%`,
-    `Nota: ${
-      produto.ratingStar
-        ? Number(
-            produto.ratingStar
-          ).toFixed(1)
-        : "sem nota"
-    }`,
-    `Vendas: ${
-      produto.sales ?? 0
-    }`,
-    `Loja: ${
-      produto.shopName ?? ""
-    }`,
-  ].join("\n");
-
-  const modelos = [
-    ultimoModeloFuncionando,
-    env("AI_MODEL"),
-    "gemini-2.5-flash-lite",
-    "gemini-2.5-flash",
-    "gemini-3.1-flash-lite",
-    "gemini-flash-lite-latest",
-  ].filter(
-    (modelo, index, array) =>
-      modelo &&
-      array.indexOf(modelo) ===
-        index
-  );
-
-  let ultimoErro = "";
-
-  for (const modelo of modelos) {
-    try {
-      const response =
-        await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent`,
-          {
-            method: "POST",
-
-            headers: {
-              "Content-Type":
-                "application/json",
-
-              "x-goog-api-key":
-                apiKey,
-            },
-
-            body: JSON.stringify({
-              systemInstruction: {
-                parts: [
-                  {
-                    text: PROMPT_IA,
-                  },
-                ],
-              },
-
-              contents: [
-                {
-                  role: "user",
-                  parts: [
-                    {
-                      text: dados,
-                    },
-                  ],
-                },
-              ],
-
-              generationConfig: {
-                maxOutputTokens: 120,
-                temperature: 0.8,
-              },
-            }),
-
-            signal:
-              AbortSignal.timeout(
-                10000
-              ),
-          }
-        );
-
-      const text =
-        await response.text();
-
-      if (
-        response.status ===
-          404 ||
-        response.status === 400
-      ) {
-        ultimoErro =
-          `${modelo}: HTTP ${response.status}`;
-
-        continue;
-      }
-
-      if (
-        response.status === 429
-     
+    `Desconto: ${Math
