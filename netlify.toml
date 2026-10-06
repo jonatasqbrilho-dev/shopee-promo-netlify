@@ -3,6 +3,3 @@
 
 [functions]
   node_bundler = "esbuild"
-
-[functions."run-now"]
-  schedule = "*/30 * * * *"
