@@ -115,6 +115,7 @@ export async function runBot({ force = false } = {}) {
 
   const links = await Promise.all(candidatas.map((o) => linkCurto(o.offerLink || o.productLink)));
   const enviados = [];
+  const erros = [];
   for (let i = 0; i < candidatas.length; i++) {
     try {
       await enviar(candidatas[i], links[i]);
@@ -123,8 +124,9 @@ export async function runBot({ force = false } = {}) {
       await new Promise((r) => setTimeout(r, 1000));
     } catch (e) {
       console.error("falha ao enviar", candidatas[i].itemId, e.message);
+      erros.push(`${candidatas[i].itemId}: ${e.message}`);
     }
   }
   await store.setJSON("sent", sent);
-  return { keyword: kw || "geral", encontradas: ofertas.length, enviados };
+  return { keyword: kw || "geral", encontradas: ofertas.length, candidatas: candidatas.length, enviados, erros };
 }
