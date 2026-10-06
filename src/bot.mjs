@@ -89,7 +89,7 @@ async function shopee(query) {
         "Content-Type": "application/json",
 
         Authorization:
-          `SHA256 Credential=${appId}, Timestamp=${timestamp}, Sig5nature=${signature}`,
+          `SHA256 Credential=${appId}, Timestamp=${timestamp}, Signature=${signature}`,
       },
 
       body: payload,
@@ -294,7 +294,7 @@ async function analisarProduto(produto) {
 
   const dados = [
     `Produto: ${produto.productName}`,
-    ``Desconto: ${Math.round(
+    `Desconto: ${Math.round(
   Number(
     produto.priceDiscountRate || 0
   )
