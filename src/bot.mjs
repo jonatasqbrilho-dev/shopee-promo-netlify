@@ -346,24 +346,21 @@ async function searchOffers(keyword) {
         page: ${page}
         limit: ${limit}
       ) {
-        nodes {
-          itemId
-          productName
-          productLink
-          productUrl
-          offerLink
-          imageUrl
-          priceMin
-          priceMax
-          priceDiscount
-          priceDiscountRate
-          ratingStar
-          ratingCount
-          sales
-          shopName
-          commissionRate
-          commission
-        }
+       nodes {
+  itemId
+  productName
+  productLink
+  offerLink
+  imageUrl
+  priceMin
+  priceMax
+  priceDiscountRate
+  ratingStar
+  sales
+  shopName
+  commissionRate
+  commission
+}
       }
     }
   `;
