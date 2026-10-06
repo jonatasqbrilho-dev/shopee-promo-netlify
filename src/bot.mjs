@@ -13,70 +13,246 @@ const SENT_TTL_MS =
 const LOCK_TTL_MS =
   10 * 60 * 1000;
 
-// ============================================================
-// UTILITÁRIOS
-// ============================================================
+const STORE_NAME =
+  "shopee-promo";
+
+/* =========================================================
+   UTILITÁRIOS
+========================================================= */
 
 const sleep = (ms) =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
-function jsonResponse(data, status = 200) {
-  return new Response(
-    JSON.stringify(data, null, 2),
-    {
-      status,
-      headers: {
-        "Content-Type": "application/json; charset=utf-8",
-        "Cache-Control": "no-store",
-      },
-    }
-  );
-}
+const jsonResponse = (body, status = 200) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+    },
+  });
 
-function escapeHtml(value = "") {
-  return String(value)
+const escapeHtml = (value = "") =>
+  String(value)
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
-}
 
-function moedaBRL(value) {
-  const numero = Number(value || 0);
+const number = (value, fallback = 0) => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+};
 
-  return numero.toLocaleString("pt-BR", {
+const integer = (value, fallback = 0) => {
+  const n = Number.parseInt(value, 10);
+  return Number.isFinite(n) ? n : fallback;
+};
+
+const moneyBRL = (value) =>
+  new Intl.NumberFormat("pt-BR", {
     style: "currency",
     currency: "BRL",
+  }).format(number(value));
+
+const discountOf = (product) => {
+  const direct = number(product?.priceDiscountRate);
+
+  if (direct > 0) {
+    return direct;
+  }
+
+  const original = number(product?.priceMin);
+  const current = number(product?.priceDiscount);
+
+  if (original > 0 && current >= 0 && current < original) {
+    return ((original - current) / original) * 100;
+  }
+
+  return 0;
+};
+
+const productUrl = (product) =>
+  product?.productLink ||
+  product?.productUrl ||
+  product?.offerLink ||
+  product?.link ||
+  "";
+
+const keywords = () =>
+  env(
+    "SHOPEE_KEYWORDS",
+    "eletronicos,casa,cozinha,ferramentas,celular,beleza,ofertas"
+  )
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+const brasilHour = () => {
+  const now = new Date();
+
+  return Number(
+    new Intl.DateTimeFormat("pt-BR", {
+      timeZone: "America/Fortaleza",
+      hour: "2-digit",
+      hour12: false,
+    }).format(now)
+  );
+};
+
+const withinSchedule = () => {
+  const start = integer(env("BOT_START_HOUR", "8"), 8);
+  const end = integer(env("BOT_END_HOUR", "22"), 22);
+  const hour = brasilHour();
+
+  if (start === end) {
+    return true;
+  }
+
+  if (start < end) {
+    return hour >= start && hour < end;
+  }
+
+  return hour >= start || hour < end;
+};
+
+/* =========================================================
+   NETLIFY BLOBS
+========================================================= */
+
+const store = () =>
+  getStore({
+    name: STORE_NAME,
+    consistency: "strong",
+  });
+
+async function getJSON(key, fallback = null) {
+  try {
+    const value = await store().get(key, {
+      type: "json",
+    });
+
+    return value ?? fallback;
+  } catch (error) {
+    console.error("Erro ao ler Blob:", error);
+    return fallback;
+  }
+}
+
+async function setJSON(key, value) {
+  await store().setJSON(key, value);
+}
+
+async function acquireLock() {
+  const key = "bot-lock";
+  const current = await getJSON(key);
+
+  const now = Date.now();
+
+  if (
+    current &&
+    number(current.expiresAt) > now
+  ) {
+    return false;
+  }
+
+  await setJSON(key, {
+    lockedAt: now,
+    expiresAt: now + LOCK_TTL_MS,
+  });
+
+  return true;
+}
+
+async function releaseLock() {
+  try {
+    await setJSON("bot-lock", {
+      lockedAt: 0,
+      expiresAt: 0,
+    });
+  } catch (error) {
+    console.error("Erro ao liberar lock:", error);
+  }
+}
+
+async function wasSent(itemId) {
+  if (!itemId) {
+    return false;
+  }
+
+  const key = `sent:${itemId}`;
+
+  const data = await getJSON(key);
+
+  if (!data) {
+    return false;
+  }
+
+  const sentAt = number(data.sentAt);
+
+  if (!sentAt) {
+    return false;
+  }
+
+  if (Date.now() - sentAt > SENT_TTL_MS) {
+    return false;
+  }
+
+  return true;
+}
+
+async function markSent(itemId) {
+  if (!itemId) {
+    return;
+  }
+
+  await setJSON(`sent:${itemId}`, {
+    sentAt: Date.now(),
   });
 }
 
-// ============================================================
-// SHOPEE
-// ============================================================
+/* =========================================================
+   SHOPEE API
+========================================================= */
 
-async function shopee(query) {
-  const appId = env("SHOPEE_APP_ID");
-  const secret = env("SHOPEE_SECRET");
+function shopeeCredentials() {
+  const appId =
+    env("SHOPEE_APP_ID") ||
+    env("SHOPEE_APPID");
 
-  if (!appId) {
-    throw new Error("SHOPEE_APP_ID não configurado.");
+  const secret =
+    env("SHOPEE_APP_SECRET") ||
+    env("SHOPEE_SECRET");
+
+  if (!appId || !secret) {
+    throw new Error(
+      "SHOPEE_APP_ID ou SHOPEE_APP_SECRET não configurado."
+    );
   }
 
-  if (!secret) {
-    throw new Error("SHOPEE_SECRET não configurado.");
-  }
+  return {
+    appId: String(appId),
+    secret: String(secret),
+  };
+}
+
+async function shopeeRequest(query) {
+  const { appId, secret } =
+    shopeeCredentials();
 
   const payload = JSON.stringify({
     query,
   });
 
   const timestamp =
-    Math.floor(Date.now() / 1000).toString();
+    Math.floor(Date.now() / 1000);
 
   const signature = createHash("sha256")
     .update(
-      `${appId}${timestamp}${payload}${secret}`
+      appId +
+        timestamp +
+        payload +
+        secret
     )
     .digest("hex");
 
@@ -89,123 +265,137 @@ async function shopee(query) {
         "Content-Type": "application/json",
 
         Authorization:
-          `SHA256 Credential=${appId}, Timestamp=${timestamp}, Signature=${signature}`,
+          `SHA256 Credential=${appId}, ` +
+          `Timestamp=${timestamp}, ` +
+          `Signature=${signature}`,
       },
 
       body: payload,
-
-      signal:
-        AbortSignal.timeout(15000),
     }
   );
 
-  const text =
-    await response.text();
+  const text = await response.text();
 
-  if (!response.ok) {
+  let data;
+
+  try {
+    data = JSON.parse(text);
+  } catch {
     throw new Error(
-      `Shopee HTTP ${response.status}: ${text.slice(
+      `Shopee retornou resposta inválida: ${text.slice(
         0,
         500
       )}`
     );
   }
 
-  let json;
-
-  try {
-    json = JSON.parse(text);
-  } catch {
+  if (!response.ok) {
     throw new Error(
-      "Shopee retornou JSON inválido."
+      `Shopee HTTP ${response.status}: ${JSON.stringify(
+        data
+      )}`
     );
   }
 
-  if (json.errors) {
+  if (data?.errors?.length) {
     throw new Error(
       `Shopee GraphQL: ${JSON.stringify(
-        json.errors
-      ).slice(0, 1000)}`
+        data.errors
+      )}`
     );
   }
 
-  return json.data;
+  return data;
 }
 
-// ============================================================
-// BUSCA OFERTAS
-// ============================================================
+/* =========================================================
+   BUSCAR OFERTAS
+========================================================= */
 
-async function buscarOfertas(
-  keyword,
-  page = 1,
-  limit = 50
-) {
-  const keywordArgument = keyword
-    ? `keyword: ${JSON.stringify(keyword)},`
-    : "";
+async function searchOffers(keyword) {
+  const safeKeyword = String(keyword)
+    .replaceAll("\\", "")
+    .replaceAll('"', '\\"');
 
-  const sortType = Number(
-    env("SORT_TYPE", "2")
+  const sortType = integer(
+    env("SHOPEE_SORT_TYPE", "2"),
+    2
+  );
+
+  const page = integer(
+    env("SHOPEE_PAGE", "1"),
+    1
+  );
+
+  const limit = Math.min(
+    Math.max(
+      integer(
+        env("SHOPEE_LIMIT", "20"),
+        20
+      ),
+      1
+    ),
+    50
   );
 
   const query = `
     {
       productOfferV2(
-        ${keywordArgument}
-        sortType: ${sortType},
-        page: ${page},
+        keyword: "${safeKeyword}"
+        sortType: ${sortType}
+        page: ${page}
         limit: ${limit}
       ) {
         nodes {
           itemId
           productName
+          productLink
+          productUrl
+          offerLink
           imageUrl
           priceMin
           priceMax
+          priceDiscount
           priceDiscountRate
           ratingStar
+          ratingCount
           sales
           shopName
-          offerLink
-          productLink
+          commissionRate
+          commission
         }
       }
     }
   `;
 
   const data =
-    await shopee(query);
+    await shopeeRequest(query);
 
   return (
-    data?.productOfferV2?.nodes ??
+    data?.data?.productOfferV2?.nodes ||
     []
   );
 }
 
-// ============================================================
-// LINK DE AFILIADO
-// ============================================================
+/* =========================================================
+   SHORT LINK
+========================================================= */
 
-async function gerarLinkCurto(url) {
-  if (!url) {
+async function generateShortLink(originUrl) {
+  if (!originUrl) {
     return "";
   }
 
   try {
-    const subId = env(
-      "SUB_ID",
-      "telegram"
-    );
+    const safeUrl = String(originUrl)
+      .replaceAll("\\", "\\\\")
+      .replaceAll('"', '\\"');
 
     const query = `
       mutation {
         generateShortLink(
           input: {
-            originUrl: ${JSON.stringify(url)},
-            subIds: [
-              ${JSON.stringify(subId)}
-            ]
+            originUrl: "${safeUrl}"
           }
         ) {
           shortLink
@@ -214,88 +404,831 @@ async function gerarLinkCurto(url) {
     `;
 
     const data =
-      await shopee(query);
+      await shopeeRequest(query);
 
     return (
-      data?.generateShortLink?.shortLink ||
-      url
+      data?.data?.generateShortLink
+        ?.shortLink ||
+      originUrl
     );
   } catch (error) {
     console.error(
-      "Erro ao gerar link curto:",
-      error.message
+      "Erro ao gerar short link:",
+      error
     );
 
-    return url;
+    return originUrl;
   }
 }
 
-// ============================================================
-// GEMINI
-// ============================================================
+/* =========================================================
+   GEMINI
+========================================================= */
 
-const PROMPT_IA = `
-Você é redator de um grupo de promoções no Telegram no Brasil.
-
-Receberá informações reais de um produto da Shopee.
-
-Crie UMA frase curta e chamativa para acompanhar a promoção.
-
-REGRAS:
-
-- No máximo 90 caracteres.
-- Português do Brasil.
-- Use somente os dados recebidos.
-- Nunca invente informações.
-- Nunca invente estoque.
-- Nunca invente prazo.
-- Nunca invente cupom.
-- Nunca invente garantia.
-- Nunca invente características.
-- Pode mencionar desconto.
-- Pode mencionar número de vendas.
-- Pode mencionar avaliação.
-- Pode mencionar benefício que esteja claramente no nome do produto.
-- No máximo 1 emoji.
-- Não coloque preço.
-- Não use hashtags.
-- Não use aspas.
-- Tom animado e natural.
-- Não seja exagerado.
-
-Se o produto for inadequado, responda somente:
-
-PULAR
-
-Produtos inadequados incluem:
-- armas;
-- conteúdo adulto;
-- medicamentos;
-- suplementos com promessa de saúde;
-- produtos falsificados;
-- réplicas de marcas.
-
-Responda SOMENTE com a frase ou PULAR.
-`;
-
-let ultimoModeloFuncionando = "";
-
-async function analisarProduto(produto) {
+async function generatePromoText(product) {
   const apiKey =
     env("GEMINI_API_KEY");
 
   if (!apiKey) {
+    return "🔥 Oferta encontrada na Shopee!";
+  }
+
+  const model =
+    env(
+      "GEMINI_MODEL",
+      "gemini-2.5-flash"
+    );
+
+  const discount =
+    Math.round(
+      discountOf(product)
+    );
+
+  const productName =
+    String(
+      product?.productName || ""
+    ).slice(0, 300);
+
+  const price =
+    moneyBRL(
+      product?.priceDiscount ??
+        product?.priceMin ??
+        0
+    );
+
+  const prompt = `
+Crie uma chamada curta e chamativa em português do Brasil para uma oferta da Shopee.
+
+Produto: ${productName}
+Preço: ${price}
+Desconto: ${discount}%
+
+Regras:
+- máximo de 90 caracteres;
+- não invente informações;
+- não diga "últimas unidades";
+- não diga "frete grátis";
+- não diga "menor preço";
+- não use informações que não foram fornecidas;
+- pode usar 1 ou 2 emojis;
+- seja natural e vendedor;
+- não coloque link;
+- não coloque hashtags.
+
+Se o produto for perigoso, ilegal, adulto ou inadequado para divulgação, responda apenas:
+PULAR
+`;
+
+  try {
+    const response =
+      await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+          model
+        )}:generateContent?key=${encodeURIComponent(
+          apiKey
+        )}`,
+        {
+          method: "POST",
+
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+
+          body: JSON.stringify({
+            systemInstruction: {
+              parts: [
+                {
+                  text:
+                    "Você cria textos curtos para promoções de e-commerce em português do Brasil.",
+                },
+              ],
+            },
+
+            contents: [
+              {
+                role: "user",
+                parts: [
+                  {
+                    text: prompt,
+                  },
+                ],
+              },
+            ],
+
+            generationConfig: {
+              temperature: 0.8,
+              maxOutputTokens: 120,
+            },
+          }),
+        }
+      );
+
+    if (!response.ok) {
+      const errorText =
+        await response.text();
+
+      console.error(
+        "Gemini HTTP:",
+        response.status,
+        errorText
+      );
+
+      return "🔥 Oferta encontrada na Shopee!";
+    }
+
+    const data =
+      await response.json();
+
+    const text =
+      data?.candidates?.[0]
+        ?.content?.parts?.[0]?.text
+        ?.trim();
+
+    if (!text) {
+      return "🔥 Oferta encontrada na Shopee!";
+    }
+
+    if (
+      text
+        .toUpperCase()
+        .includes("PULAR")
+    ) {
+      return "PULAR";
+    }
+
+    return text.slice(0, 120);
+  } catch (error) {
+    console.error(
+      "Erro Gemini:",
+      error
+    );
+
+    return "🔥 Oferta encontrada na Shopee!";
+  }
+}
+
+/* =========================================================
+   TELEGRAM
+========================================================= */
+
+function telegramToken() {
+  return (
+    env("TELEGRAM_BOT_TOKEN") ||
+    env("TELEGRAM_TOKEN")
+  );
+}
+
+function telegramChatId() {
+  return (
+    env("TELEGRAM_CHAT_ID") ||
+    env("TELEGRAM_CHANNEL_ID")
+  );
+}
+
+async function telegramRequest(
+  method,
+  body
+) {
+  const token =
+    telegramToken();
+
+  if (!token) {
+    throw new Error(
+      "TELEGRAM_BOT_TOKEN não configurado."
+    );
+  }
+
+  const response =
+    await fetch(
+      `https://api.telegram.org/bot${token}/${method}`,
+      {
+        method: "POST",
+
+        headers: {
+          "Content-Type":
+            "application/json",
+        },
+
+        body: JSON.stringify(body),
+      }
+    );
+
+  const data =
+    await response.json();
+
+  if (!response.ok || !data?.ok) {
+    throw new Error(
+      `Telegram ${method}: ${JSON.stringify(
+        data
+      )}`
+    );
+  }
+
+  return data;
+}
+
+async function sendTelegramPhoto(
+  imageUrl,
+  caption
+) {
+  const chatId =
+    telegramChatId();
+
+  if (!chatId) {
+    throw new Error(
+      "TELEGRAM_CHAT_ID não configurado."
+    );
+  }
+
+  if (
+    imageUrl &&
+    /^https?:\/\//i.test(imageUrl)
+  ) {
+    try {
+      return await telegramRequest(
+        "sendPhoto",
+        {
+          chat_id: chatId,
+          photo: imageUrl,
+          caption,
+          parse_mode: "HTML",
+          disable_web_page_preview: true,
+        }
+      );
+    } catch (error) {
+      console.error(
+        "sendPhoto falhou:",
+        error
+      );
+    }
+  }
+
+  return telegramRequest(
+    "sendMessage",
+    {
+      chat_id: chatId,
+      text: caption,
+      parse_mode: "HTML",
+      disable_web_page_preview: false,
+    }
+  );
+}
+
+/* =========================================================
+   FORMATAÇÃO DA PROMOÇÃO
+========================================================= */
+
+function formatPromotion(
+  product,
+  promoText,
+  link
+) {
+  const name =
+    escapeHtml(
+      product?.productName ||
+        "Oferta Shopee"
+    );
+
+  const price =
+    moneyBRL(
+      product?.priceDiscount ??
+        product?.priceMin ??
+        0
+    );
+
+  const discount =
+    Math.round(
+      discountOf(product)
+    );
+
+  const rating =
+    number(
+      product?.ratingStar
+    );
+
+  const sales =
+    integer(
+      product?.sales
+    );
+
+  const lines = [];
+
+  if (promoText) {
+    lines.push(
+      escapeHtml(promoText)
+    );
+    lines.push("");
+  }
+
+  lines.push(
+    `🛍️ <b>${name}</b>`
+  );
+
+  if (price !== "R$ 0,00") {
+    lines.push(
+      `💰 <b>${price}</b>`
+    );
+  }
+
+  if (discount > 0) {
+    lines.push(
+      `🔥 <b>${discount}% OFF</b>`
+    );
+  }
+
+  if (rating > 0) {
+    lines.push(
+      `⭐ ${rating.toFixed(1)}`
+    );
+  }
+
+  if (sales > 0) {
+    lines.push(
+      `🛒 ${sales.toLocaleString(
+        "pt-BR"
+      )} vendas`
+    );
+  }
+
+  if (link) {
+    lines.push("");
+    lines.push(
+      `👉 <a href="${escapeHtml(
+        link
+      )}">COMPRAR NA SHOPEE</a>`
+    );
+  }
+
+  return lines.join("\n");
+}
+
+/* =========================================================
+   ESCOLHA DAS OFERTAS
+========================================================= */
+
+function scoreProduct(product) {
+  const discount =
+    discountOf(product);
+
+  const sales =
+    integer(product?.sales);
+
+  const rating =
+    number(product?.ratingStar);
+
+  return (
+    discount * 10 +
+    Math.log10(
+      sales + 1
+    ) * 8 +
+    rating * 3
+  );
+}
+
+function normalizeProduct(product) {
+  return {
+    ...product,
+
+    itemId:
+      product?.itemId ??
+      product?.productId ??
+      product?.offerId ??
+      product?.productName,
+
+    productName:
+      product?.productName ||
+      "Produto Shopee",
+
+    priceMin:
+      number(
+        product?.priceMin
+      ),
+
+    priceDiscount:
+      number(
+        product?.priceDiscount
+      ),
+
+    priceDiscountRate:
+      number(
+        product?.priceDiscountRate
+      ),
+
+    ratingStar:
+      number(
+        product?.ratingStar
+      ),
+
+    sales:
+      integer(
+        product?.sales
+      ),
+  };
+}
+
+/* =========================================================
+   ESTADO DO BOT
+========================================================= */
+
+async function getBotState() {
+  return getJSON(
+    "bot-state",
+    {
+      keywordIndex: 0,
+      lastRun: null,
+      published: 0,
+    }
+  );
+}
+
+async function saveBotState(state) {
+  await setJSON(
+    "bot-state",
+    state
+  );
+}
+
+/* =========================================================
+   EXECUÇÃO PRINCIPAL
+========================================================= */
+
+export async function runBot({
+  force = false,
+} = {}) {
+  if (
+    !force &&
+    !withinSchedule()
+  ) {
     return {
-      frase: "",
-      erro:
-        "GEMINI_API_KEY não configurada.",
+      ok: true,
+      skipped: true,
+      reason:
+        "Fora do horário configurado.",
     };
   }
 
-  const dados = [
-    `Produto: ${produto.productName}`,
-    `Desconto: ${Math.round(
-  Number(
-    produto.priceDiscountRate || 0
-  )
-)}%`,
+  const locked =
+    await acquireLock();
+
+  if (!locked) {
+    return {
+      ok: true,
+      skipped: true,
+      reason:
+        "Outra execução do bot está em andamento.",
+    };
+  }
+
+  try {
+    const minDiscount =
+      number(
+        env(
+          "MIN_DISCOUNT",
+          "20"
+        ),
+        20
+      );
+
+    const postsPerCycle =
+      Math.max(
+        1,
+        Math.min(
+          integer(
+            env(
+              "POSTS_PER_CYCLE",
+              "3"
+            ),
+            3
+          ),
+          10
+        )
+      );
+
+    const list =
+      keywords();
+
+    if (!list.length) {
+      throw new Error(
+        "Nenhuma palavra-chave configurada."
+      );
+    }
+
+    const state =
+      await getBotState();
+
+    let keywordIndex =
+      integer(
+        state.keywordIndex,
+        0
+      );
+
+    if (
+      keywordIndex >= list.length
+    ) {
+      keywordIndex = 0;
+    }
+
+    const candidates = [];
+
+    const searches =
+      Math.min(
+        list.length,
+        Math.max(
+          postsPerCycle * 2,
+          4
+        )
+      );
+
+    for (
+      let i = 0;
+      i < searches;
+      i++
+    ) {
+      const keyword =
+        list[
+          (keywordIndex + i) %
+            list.length
+        ];
+
+      try {
+        const products =
+          await searchOffers(
+            keyword
+          );
+
+        for (const raw of products) {
+          const product =
+            normalizeProduct(
+              raw
+            );
+
+          if (
+            !product.itemId
+          ) {
+            continue;
+          }
+
+          const discount =
+            discountOf(
+              product
+            );
+
+          if (
+            discount <
+            minDiscount
+          ) {
+            continue;
+          }
+
+          candidates.push(
+            product
+          );
+        }
+      } catch (error) {
+        console.error(
+          `Erro pesquisando "${keyword}":`,
+          error
+        );
+      }
+
+      await sleep(250);
+    }
+
+    const unique =
+      new Map();
+
+    for (const product of candidates) {
+      const id =
+        String(
+          product.itemId
+        );
+
+      if (
+        !unique.has(id)
+      ) {
+        unique.set(
+          id,
+          product
+        );
+      }
+    }
+
+    const sorted =
+      Array.from(
+        unique.values()
+      ).sort(
+        (a, b) =>
+          scoreProduct(b) -
+          scoreProduct(a)
+      );
+
+    const published = [];
+
+    for (
+      const product of sorted
+    ) {
+      if (
+        published.length >=
+        postsPerCycle
+      ) {
+        break;
+      }
+
+      if (
+        await wasSent(
+          product.itemId
+        )
+      ) {
+        continue;
+      }
+
+      const promoText =
+        await generatePromoText(
+          product
+        );
+
+      if (
+        promoText
+          .toUpperCase()
+          .includes("PULAR")
+      ) {
+        continue;
+      }
+
+      const originalLink =
+        productUrl(product);
+
+      if (!originalLink) {
+        continue;
+      }
+
+      const shortLink =
+        await generateShortLink(
+          originalLink
+        );
+
+      const caption =
+        formatPromotion(
+          product,
+          promoText,
+          shortLink
+        );
+
+      try {
+        await sendTelegramPhoto(
+          product.imageUrl,
+          caption
+        );
+
+        await markSent(
+          product.itemId
+        );
+
+        published.push({
+          itemId:
+            product.itemId,
+          productName:
+            product.productName,
+          discount:
+            discountOf(
+              product
+            ),
+          link:
+            shortLink ||
+            originalLink,
+        });
+
+        await sleep(
+          integer(
+            env(
+              "POST_DELAY_MS",
+              "1500"
+            ),
+            1500
+          )
+        );
+      } catch (error) {
+        console.error(
+          "Erro publicando produto:",
+          error
+        );
+      }
+    }
+
+    const newIndex =
+      (keywordIndex +
+        searches) %
+      list.length;
+
+    await saveBotState({
+      keywordIndex:
+        newIndex,
+
+      lastRun:
+        new Date().toISOString(),
+
+      published:
+        published.length,
+    });
+
+    return {
+      ok: true,
+      force,
+      searched:
+        searches,
+      candidates:
+        sorted.length,
+      published:
+        published.length,
+      products:
+        published,
+    };
+  } finally {
+    await releaseLock();
+  }
+}
+
+/* =========================================================
+   NETLIFY FUNCTION
+========================================================= */
+
+export default async function handler(
+  request
+) {
+  try {
+    if (
+      request.method !== "GET" &&
+      request.method !== "POST"
+    ) {
+      return jsonResponse(
+        {
+          ok: false,
+          error:
+            "Método não permitido.",
+        },
+        405
+      );
+    }
+
+    const url =
+      new URL(
+        request.url
+      );
+
+    const force =
+      url.searchParams.get(
+        "force"
+      ) === "1";
+
+    if (force) {
+      const triggerKey =
+        env("TRIGGER_KEY");
+
+      const suppliedKey =
+        url.searchParams.get(
+          "key"
+        );
+
+      if (
+        !triggerKey ||
+        suppliedKey !==
+          triggerKey
+      ) {
+        return jsonResponse(
+          {
+            ok: false,
+            error:
+              "Chave inválida.",
+          },
+          401
+        );
+      }
+    }
+
+    const result =
+      await runBot({
+        force,
+      });
+
+    return jsonResponse(
+      result,
+      result.ok ? 200 : 500
+    );
+  } catch (error) {
+    console.error(
+      "Erro geral do bot:",
+      error
+    );
+
+    return jsonResponse(
+      {
+        ok: false,
+        error:
+          error?.message ||
+          String(error),
+      },
+      500
+    );
+  }
+}
