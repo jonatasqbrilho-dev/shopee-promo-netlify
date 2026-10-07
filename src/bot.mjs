@@ -368,18 +368,50 @@ async function callGemini(model, apiKey, prompt, timeoutMs) {
   return text;
 }
 
-async function generatePromoText(product, deadline = Infinity) {
-  const apiKey = env("GEMINI_API_KEY");
+async function callGroq(apiKey, model, prompt, timeoutMs) {
+  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    signal: AbortSignal.timeout(timeoutMs),
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0.8,
+      max_tokens: 200,
+      messages: [
+        {
+          role: "system",
+          content:
+            "Você cria textos curtos para promoções de e-commerce em português do Brasil.",
+        },
+        { role: "user", content: prompt },
+      ],
+    }),
+  });
 
-  if (!apiKey) {
-    console.error("GEMINI_API_KEY não configurada.");
-    return FALLBACK_TEXT;
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`HTTP ${response.status}: ${errorText.slice(0, 300)}`);
   }
 
-  const models = [
-    env("GEMINI_MODEL", "gemini-3.5-flash-lite"),
-    env("GEMINI_FALLBACK_MODEL", "gemini-3.7-flash"),
-  ].filter((m, i, arr) => m && arr.indexOf(m) === i);
+  const data = await response.json();
+
+  const text = String(data?.choices?.[0]?.message?.content || "")
+    .trim()
+    .replace(/^["“]|["”]$/g, "");
+
+  if (!text) {
+    throw new Error("resposta vazia");
+  }
+
+  return text;
+}
+
+async function generatePromoText(product, deadline = Infinity) {
+  const groqKey = env("GROQ_API_KEY");
+  const geminiKey = env("GEMINI_API_KEY");
 
   const discount = Math.round(discountOf(product));
   const productName = String(product?.productName || "").slice(0, 300);
@@ -412,19 +444,48 @@ Regras:
 Se o produto for perigoso, ilegal, adulto ou inadequado para divulgação, responda apenas: PULAR
 `;
 
-  for (let i = 0; i < models.length; i++) {
-    // Só tenta o modelo reserva se ainda houver tempo no ciclo.
+  // Ordem de tentativas: Groq (rápido) -> Gemini -> Gemini reserva
+  const attempts = [];
+
+  if (groqKey) {
+    const groqModel = env("GROQ_MODEL", "llama-3.3-70b-versatile");
+    attempts.push({
+      name: `groq/${groqModel}`,
+      timeoutMs: 6000,
+      run: (timeoutMs) => callGroq(groqKey, groqModel, prompt, timeoutMs),
+    });
+  }
+
+  if (geminiKey) {
+    const geminiModels = [
+      env("GEMINI_MODEL", "gemini-3.5-flash-lite"),
+      env("GEMINI_FALLBACK_MODEL", "gemini-3.7-flash"),
+    ].filter((m, i, arr) => m && arr.indexOf(m) === i);
+
+    geminiModels.forEach((model, index) => {
+      attempts.push({
+        name: `gemini/${model}`,
+        timeoutMs: index === 0 ? 7000 : 9000,
+        run: (timeoutMs) => callGemini(model, geminiKey, prompt, timeoutMs),
+      });
+    });
+  }
+
+  if (!attempts.length) {
+    console.error("Nenhuma chave de IA configurada (GROQ_API_KEY ou GEMINI_API_KEY).");
+    return FALLBACK_TEXT;
+  }
+
+  for (let i = 0; i < attempts.length; i++) {
+    // Só tenta as próximas opções se ainda houver tempo no ciclo.
     if (i > 0 && Date.now() > deadline - 9000) {
       break;
     }
 
+    const attempt = attempts[i];
+
     try {
-      const text = await callGemini(
-        models[i],
-        apiKey,
-        prompt,
-        i === 0 ? 7000 : 9000
-      );
+      const text = await attempt.run(attempt.timeoutMs);
 
       if (text.toUpperCase() === "PULAR") {
         return "PULAR";
@@ -432,7 +493,7 @@ Se o produto for perigoso, ilegal, adulto ou inadequado para divulgação, respo
 
       return text.slice(0, 160);
     } catch (error) {
-      console.error(`Gemini falhou (${models[i]}):`, error?.message || error);
+      console.error(`IA falhou (${attempt.name}):`, error?.message || error);
     }
   }
 
