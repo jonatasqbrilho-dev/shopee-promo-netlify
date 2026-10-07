@@ -316,7 +316,59 @@ async function generateShortLink(originUrl) {
    GEMINI
 ========================================================= */
 
-async function generatePromoText(product) {
+async function callGemini(model, apiKey, prompt, timeoutMs) {
+  const url =
+    "https://generativelanguage.googleapis.com/v1beta/models/" +
+    encodeURIComponent(model) +
+    ":generateContent?key=" +
+    encodeURIComponent(apiKey);
+
+  const generationConfig = { maxOutputTokens: 300 };
+
+  // Flash-Lite pensa pouco por padrão; os demais precisam de nível baixo.
+  if (!model.includes("lite")) {
+    generationConfig.thinkingConfig = { thinkingLevel: "low" };
+  }
+
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(timeoutMs),
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      systemInstruction: {
+        parts: [
+          {
+            text: "Você cria textos curtos para promoções de e-commerce em português do Brasil.",
+          },
+        ],
+      },
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`HTTP ${response.status}: ${errorText.slice(0, 300)}`);
+  }
+
+  const data = await response.json();
+  const candidate = data?.candidates?.[0];
+
+  const text = (candidate?.content?.parts || [])
+    .map((part) => part?.text || "")
+    .join("")
+    .trim()
+    .replace(/^["“]|["”]$/g, "");
+
+  if (!text) {
+    throw new Error(`resposta vazia (finishReason: ${candidate?.finishReason})`);
+  }
+
+  return text;
+}
+
+async function generatePromoText(product, deadline = Infinity) {
   const apiKey = env("GEMINI_API_KEY");
 
   if (!apiKey) {
@@ -324,7 +376,11 @@ async function generatePromoText(product) {
     return FALLBACK_TEXT;
   }
 
-  const model = env("GEMINI_MODEL", "gemini-3.5-flash-lite");
+  const models = [
+    env("GEMINI_MODEL", "gemini-3.5-flash-lite"),
+    env("GEMINI_FALLBACK_MODEL", "gemini-3.7-flash"),
+  ].filter((m, i, arr) => m && arr.indexOf(m) === i);
+
   const discount = Math.round(discountOf(product));
   const productName = String(product?.productName || "").slice(0, 300);
   const price = moneyBRL(priceOf(product));
@@ -356,65 +412,31 @@ Regras:
 Se o produto for perigoso, ilegal, adulto ou inadequado para divulgação, responda apenas: PULAR
 `;
 
-  const url =
-    "https://generativelanguage.googleapis.com/v1beta/models/" +
-    encodeURIComponent(model) +
-    ":generateContent?key=" +
-    encodeURIComponent(apiKey);
-
-  try {
-    const response = await fetch(url, {
-      signal: AbortSignal.timeout(10000),
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: {
-          parts: [
-            {
-              text: "Você cria textos curtos para promoções de e-commerce em português do Brasil.",
-            },
-          ],
-        },
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        generationConfig: {
-          maxOutputTokens: 300,
-        },
-      }),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("Gemini HTTP:", response.status, errorText);
-      return FALLBACK_TEXT;
+  for (let i = 0; i < models.length; i++) {
+    // Só tenta o modelo reserva se ainda houver tempo no ciclo.
+    if (i > 0 && Date.now() > deadline - 9000) {
+      break;
     }
 
-    const data = await response.json();
-    const candidate = data?.candidates?.[0];
-
-    const text = (candidate?.content?.parts || [])
-      .map((part) => part?.text || "")
-      .join("")
-      .trim()
-      .replace(/^["“]|["”]$/g, "");
-
-    if (!text) {
-      console.error(
-        "Gemini sem texto. finishReason:",
-        candidate?.finishReason,
-        JSON.stringify(data?.promptFeedback || {})
+    try {
+      const text = await callGemini(
+        models[i],
+        apiKey,
+        prompt,
+        i === 0 ? 7000 : 9000
       );
-      return FALLBACK_TEXT;
-    }
 
-    if (text.toUpperCase() === "PULAR") {
-      return "PULAR";
-    }
+      if (text.toUpperCase() === "PULAR") {
+        return "PULAR";
+      }
 
-    return text.slice(0, 160);
-  } catch (error) {
-    console.error("Erro Gemini:", error);
-    return FALLBACK_TEXT;
+      return text.slice(0, 160);
+    } catch (error) {
+      console.error(`Gemini falhou (${models[i]}):`, error?.message || error);
+    }
   }
+
+  return FALLBACK_TEXT;
 }
 
 /* =========================================================
@@ -706,7 +728,7 @@ export async function runBot({ force = false } = {}) {
         continue;
       }
 
-      const promoText = await generatePromoText(product);
+      const promoText = await generatePromoText(product, deadline);
 
       if (promoText.toUpperCase() === "PULAR") {
         continue;
