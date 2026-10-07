@@ -312,6 +312,31 @@ async function generateShortLink(originUrl) {
   }
 }
 
+async function createCustomShortLink(itemId, targetUrl) {
+  if (!targetUrl) {
+    return "";
+  }
+
+  const seed = String(itemId || targetUrl);
+  const id = createHash("sha256")
+    .update(seed)
+    .digest("base64url")
+    .slice(0, 10);
+
+  await setJSON(`redirect:${id}`, {
+    url: targetUrl,
+    itemId: itemId ? String(itemId) : null,
+    createdAt: Date.now(),
+  });
+
+  const baseUrl = env(
+    "SHORT_LINK_BASE_URL",
+    "https://shopee-promo-netlify.netlify.app"
+  ).replace(/\/$/, "");
+
+  return `${baseUrl}/r/${id}`;
+}
+
 /* =========================================================
    GEMINI
 ========================================================= */
@@ -586,45 +611,30 @@ function formatPromotion(product, promoText, link) {
 
   const lines = [];
 
-  // Texto criado pela IA
   if (promoText) {
     lines.push(`🔥 <b>${escapeHtml(promoText)}</b>`);
     lines.push("");
   }
 
-  // Produto
   lines.push(`🛍️ <b>${name}</b>`);
   lines.push("");
 
-  // Preço
   if (min > 0) {
-    lines.push(
-      `💰 ${priceLabel}<b>${moneyBRL(min)}</b>`
-    );
+    lines.push(`💰 ${priceLabel}<b>${moneyBRL(min)}</b>`);
   }
 
-  // Desconto
   if (discount > 0) {
-    lines.push(
-      `🏷️ <b>${discount}% OFF</b>`
-    );
+    lines.push(`🏷️ <b>${discount}% OFF</b>`);
   }
 
-  // Avaliação
   if (rating > 0) {
-    lines.push(
-      `⭐ ${rating.toFixed(1)} de 5`
-    );
+    lines.push(`⭐ ${rating.toFixed(1)} de 5`);
   }
 
-  // Vendas
   if (sales > 0) {
-    lines.push(
-      `🛒 ${sales.toLocaleString("pt-BR")} vendidos`
-    );
+    lines.push(`🛒 ${sales.toLocaleString("pt-BR")} vendidos`);
   }
 
-  // Link
   if (link) {
     lines.push("");
     lines.push(
@@ -806,7 +816,11 @@ export async function runBot({ force = false } = {}) {
         continue;
       }
 
-      const shortLink = await generateShortLink(originalLink);
+      const shopeeShortLink = await generateShortLink(originalLink);
+      const shortLink = await createCustomShortLink(
+        product.itemId,
+        shopeeShortLink || originalLink
+      );
       const caption = formatPromotion(product, promoText, shortLink);
 
       try {
