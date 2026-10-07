@@ -318,6 +318,7 @@ async function createCustomShortLink(itemId, targetUrl) {
   }
 
   const seed = String(itemId || targetUrl);
+
   const id = createHash("sha256")
     .update(seed)
     .digest("base64url")
@@ -820,10 +821,23 @@ export async function runBot({ force = false } = {}) {
 // Não cria mais o redirecionamento pelo Netlify (/r/...).
 const affiliateLink = await generateShortLink(originalLink);
 
+// Primeiro gera o link oficial de afiliado da Shopee
+const affiliateLink = await generateShortLink(originalLink);
+
+if (!affiliateLink) {
+  continue;
+}
+
+// Depois cria o link curto usando o domínio próprio
+const shortLink = await createCustomShortLink(
+  product.itemId,
+  affiliateLink
+);
+
 const caption = formatPromotion(
   product,
   promoText,
-  affiliateLink || originalLink
+  shortLink || affiliateLink
 );
 
 
@@ -832,10 +846,10 @@ const caption = formatPromotion(
         await markSent(product.itemId);
 
       published.push({
-  itemId: product.itemId,
+itemId: product.itemId,
   productName: product.productName,
   discount: discountOf(product),
-  link: affiliateLink || originalLink,
+  link: shortLink || affiliateLink,
 });
 
         await sleep(integer(env("POST_DELAY_MS", "500"), 500));
