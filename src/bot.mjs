@@ -816,23 +816,27 @@ export async function runBot({ force = false } = {}) {
         continue;
       }
 
-      const shopeeShortLink = await generateShortLink(originalLink);
-      const shortLink = await createCustomShortLink(
-        product.itemId,
-        shopeeShortLink || originalLink
-      );
-      const caption = formatPromotion(product, promoText, shortLink);
+   // Usa diretamente o link de afiliado da Shopee.
+// Não cria mais o redirecionamento pelo Netlify (/r/...).
+const affiliateLink = await generateShortLink(originalLink);
+
+const caption = formatPromotion(
+  product,
+  promoText,
+  affiliateLink || originalLink
+);
+const caption = formatPromotion(product, promoText, shortLink);
 
       try {
         await sendTelegramPhoto(product.imageUrl, caption);
         await markSent(product.itemId);
 
-        published.push({
-          itemId: product.itemId,
-          productName: product.productName,
-          discount: discountOf(product),
-          link: shortLink || originalLink,
-        });
+      published.push({
+  itemId: product.itemId,
+  productName: product.productName,
+  discount: discountOf(product),
+  link: affiliateLink || originalLink,
+});
 
         await sleep(integer(env("POST_DELAY_MS", "500"), 500));
       } catch (error) {
