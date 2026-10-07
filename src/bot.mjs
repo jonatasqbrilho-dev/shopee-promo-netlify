@@ -5,7 +5,7 @@ const env = (key, fallback = "") => process.env[key] ?? fallback;
 
 const SHOPEE_ENDPOINT = "https://open-api.affiliate.shopee.com.br/graphql";
 const SENT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const LOCK_TTL_MS = 10 * 60 * 1000;
+const LOCK_TTL_MS = 2 * 60 * 1000;
 const STORE_NAME = "shopee-promo";
 const FALLBACK_TEXT = "🔥 Oferta encontrada na Shopee!";
 
@@ -197,6 +197,7 @@ async function shopeeRequest(query) {
     .digest("hex");
 
   const response = await fetch(SHOPEE_ENDPOINT, {
+    signal: AbortSignal.timeout(8000),
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -355,6 +356,7 @@ Se o produto for perigoso, ilegal, adulto ou inadequado para divulgação, respo
 
   try {
     const response = await fetch(url, {
+      signal: AbortSignal.timeout(8000),
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -368,8 +370,8 @@ Se o produto for perigoso, ilegal, adulto ou inadequado para divulgação, respo
         contents: [{ role: "user", parts: [{ text: prompt }] }],
         generationConfig: {
           temperature: 0.8,
-  maxOutputTokens: 600,
-  thinkingConfig: { thinkingLevel: "low" },
+          maxOutputTokens: 600,
+          thinkingConfig: { thinkingLevel: "low" },
         },
       }),
     });
@@ -601,7 +603,7 @@ export async function runBot({ force = false } = {}) {
 
     const postsPerCycle = Math.max(
       1,
-      Math.min(integer(env("POSTS_PER_CYCLE", "3"), 3), 10)
+      Math.min(integer(env("POSTS_PER_CYCLE", "1"), 1), 10)
     );
 
     const list = keywords();
@@ -617,33 +619,45 @@ export async function runBot({ force = false } = {}) {
       keywordIndex = 0;
     }
 
+    const startedAt = Date.now();
+    const deadline = startedAt + 22000;
+
     const candidates = [];
-    const searches = Math.min(list.length, Math.max(postsPerCycle * 2, 4));
+    const searches = Math.min(
+      list.length,
+      Math.max(integer(env("SEARCHES_PER_CYCLE", "2"), 2), 1)
+    );
 
+    const keywordsToSearch = [];
     for (let i = 0; i < searches; i++) {
-      const keyword = list[(keywordIndex + i) % list.length];
+      keywordsToSearch.push(list[(keywordIndex + i) % list.length]);
+    }
 
-      try {
-        const products = await searchOffers(keyword);
-
-        for (const raw of products) {
-          const product = normalizeProduct(raw);
-
-          if (!product.itemId) {
-            continue;
-          }
-
-          if (discountOf(product) < minDiscount) {
-            continue;
-          }
-
-          candidates.push(product);
+    const results = await Promise.all(
+      keywordsToSearch.map(async (keyword) => {
+        try {
+          return await searchOffers(keyword);
+        } catch (error) {
+          console.error(`Erro pesquisando "${keyword}":`, error);
+          return [];
         }
-      } catch (error) {
-        console.error(`Erro pesquisando "${keyword}":`, error);
-      }
+      })
+    );
 
-      await sleep(250);
+    for (const products of results) {
+      for (const raw of products) {
+        const product = normalizeProduct(raw);
+
+        if (!product.itemId) {
+          continue;
+        }
+
+        if (discountOf(product) < minDiscount) {
+          continue;
+        }
+
+        candidates.push(product);
+      }
     }
 
     const unique = new Map();
@@ -663,6 +677,11 @@ export async function runBot({ force = false } = {}) {
 
     for (const product of sorted) {
       if (published.length >= postsPerCycle) {
+        break;
+      }
+
+      if (Date.now() > deadline) {
+        console.error("Tempo limite do ciclo atingido, encerrando.");
         break;
       }
 
@@ -696,7 +715,7 @@ export async function runBot({ force = false } = {}) {
           link: shortLink || originalLink,
         });
 
-        await sleep(integer(env("POST_DELAY_MS", "1500"), 1500));
+        await sleep(integer(env("POST_DELAY_MS", "500"), 500));
       } catch (error) {
         console.error("Erro publicando produto:", error);
       }
