@@ -1125,12 +1125,8 @@ function formatPromotion(
 
   if (link) {
     lines.push("");
-
-    lines.push(
-      `👉 <a href="${escapeHtml(
-        link
-      )}"><b>COMPRAR AGORA NA SHOPEE</b></a>`
-    );
+    lines.push("👉 <b>COMPRE AQUI:</b>");
+    lines.push(escapeHtml(link));
   }
 
   return lines.join("\n");
