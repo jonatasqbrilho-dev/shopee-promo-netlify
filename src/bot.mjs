@@ -323,7 +323,7 @@ async function generatePromoText(product) {
     return FALLBACK_TEXT;
   }
 
-  const model = env("GEMINI_MODEL", "gemini-2.5-flash");
+  const model = env("GEMINI_MODEL", "gemini-3.8-flash");
   const discount = Math.round(discountOf(product));
   const productName = String(product?.productName || "").slice(0, 300);
   const price = moneyBRL(priceOf(product));
@@ -368,8 +368,8 @@ Se o produto for perigoso, ilegal, adulto ou inadequado para divulgação, respo
         contents: [{ role: "user", parts: [{ text: prompt }] }],
         generationConfig: {
           temperature: 0.8,
-          maxOutputTokens: 300,
-          thinkingConfig: { thinkingBudget: 0 },
+  maxOutputTokens: 600,
+  thinkingConfig: { thinkingLevel: "low" },
         },
       }),
     });
