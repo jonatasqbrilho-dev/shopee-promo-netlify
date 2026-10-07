@@ -825,7 +825,7 @@ const caption = formatPromotion(
   promoText,
   affiliateLink || originalLink
 );
-const caption = formatPromotion(product, promoText, shortLink);
+
 
       try {
         await sendTelegramPhoto(product.imageUrl, caption);
