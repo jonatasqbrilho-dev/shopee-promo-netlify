@@ -329,21 +329,29 @@ async function generatePromoText(product) {
   const productName = String(product?.productName || "").slice(0, 300);
   const price = moneyBRL(priceOf(product));
 
+  const rating = number(product?.ratingStar).toFixed(1);
+  const sales = integer(product?.sales);
+
   const prompt = `
-Crie uma chamada curta e chamativa em português do Brasil para uma oferta da Shopee.
+Você é redator de um canal de ofertas no Telegram do Brasil. Escreva UMA frase curta que faça o leitor querer comprar agora.
 
 Produto: ${productName}
 Preço: ${price}
 Desconto: ${discount}%
+Avaliação: ${rating} de 5
+Vendas: ${sales}
 
 Regras:
-- máximo de 90 caracteres;
-- não invente informações;
-- não diga "últimas unidades", "frete grátis" ou "menor preço";
-- pode usar 1 ou 2 emojis;
-- seja natural e vendedor;
-- não coloque link nem hashtags;
-- responda somente com a frase, sem aspas.
+- 1 frase (no máximo 2 curtas), até 130 caracteres;
+- destaque UM benefício real desse tipo de produto, baseado só no nome (ex.: praticidade, economia, conforto);
+- crie senso de urgência de forma honesta, como "aproveite enquanto está em oferta" ou "corre antes que acabe";
+- se as vendas passarem de 1000, pode citar como prova social (ex.: "mais de 19 mil vendidos");
+- NÃO invente: estoque, "últimas unidades", "só hoje", prazo, frete grátis, garantia, cupom ou qualquer dado que não esteja acima;
+- NÃO repita o preço nem o desconto;
+- NÃO corrija nem altere o nome do produto;
+- tom animado e natural, com no máximo 2 emojis;
+- sem link, sem hashtags, sem aspas;
+- responda somente com a frase.
 
 Se o produto for perigoso, ilegal, adulto ou inadequado para divulgação, responda apenas: PULAR
 `;
@@ -402,7 +410,7 @@ Se o produto for perigoso, ilegal, adulto ou inadequado para divulgação, respo
       return "PULAR";
     }
 
-    return text.slice(0, 120);
+    return text.slice(0, 160);
   } catch (error) {
     console.error("Erro Gemini:", error);
     return FALLBACK_TEXT;
@@ -480,16 +488,14 @@ async function sendTelegramPhoto(imageUrl, caption) {
 
 function formatPromotion(product, promoText, link) {
   const name = escapeHtml(
-    String(product?.productName || "Oferta Shopee").slice(0, 150)
+    String(product?.productName || "Oferta Shopee").slice(0, 100)
   );
 
   const min = priceOf(product);
   const max = number(product?.priceMax);
 
-  const price =
-    max > min && min > 0
-      ? `a partir de ${moneyBRL(min)}`
-      : moneyBRL(min);
+  const priceLabel =
+    max > min && min > 0 ? "a partir de " : "";
 
   const discount = Math.round(discountOf(product));
   const rating = number(product?.ratingStar);
@@ -498,31 +504,44 @@ function formatPromotion(product, promoText, link) {
   const lines = [];
 
   if (promoText) {
-    lines.push(escapeHtml(promoText));
+    lines.push(`🔥 <b>${escapeHtml(promoText)}</b>`);
     lines.push("");
   }
 
-  lines.push(`🛍️ <b>${name}</b>`);
+  lines.push(`🛍️ ${name}`);
+  lines.push("");
+
+  const priceLine = [];
 
   if (min > 0) {
-    lines.push(`💰 <b>${price}</b>`);
+    priceLine.push(`💰 ${priceLabel}<b>${moneyBRL(min)}</b>`);
   }
 
   if (discount > 0) {
-    lines.push(`🔥 <b>${discount}% OFF</b>`);
+    priceLine.push(`🏷️ <b>${discount}% OFF</b>`);
   }
 
+  if (priceLine.length) {
+    lines.push(priceLine.join("   "));
+  }
+
+  const proofLine = [];
+
   if (rating > 0) {
-    lines.push(`⭐ ${rating.toFixed(1)}`);
+    proofLine.push(`⭐ ${rating.toFixed(1)}`);
   }
 
   if (sales > 0) {
-    lines.push(`🛒 ${sales.toLocaleString("pt-BR")} vendas`);
+    proofLine.push(`🛒 ${sales.toLocaleString("pt-BR")} vendidos`);
+  }
+
+  if (proofLine.length) {
+    lines.push(proofLine.join("  •  "));
   }
 
   if (link) {
     lines.push("");
-    lines.push(`👉 <a href="${escapeHtml(link)}">COMPRAR NA SHOPEE</a>`);
+    lines.push(`👉 <a href="${escapeHtml(link)}"><b>COMPRAR AGORA NA SHOPEE</b></a>`);
   }
 
   return lines.join("\n");
