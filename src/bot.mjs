@@ -586,45 +586,50 @@ function formatPromotion(product, promoText, link) {
 
   const lines = [];
 
+  // Texto criado pela IA
   if (promoText) {
     lines.push(`🔥 <b>${escapeHtml(promoText)}</b>`);
     lines.push("");
   }
 
-  lines.push(`🛍️ ${name}`);
+  // Produto
+  lines.push(`🛍️ <b>${name}</b>`);
   lines.push("");
 
-  const priceLine = [];
-
+  // Preço
   if (min > 0) {
-    priceLine.push(`💰 ${priceLabel}<b>${moneyBRL(min)}</b>`);
+    lines.push(
+      `💰 ${priceLabel}<b>${moneyBRL(min)}</b>`
+    );
   }
 
+  // Desconto
   if (discount > 0) {
-    priceLine.push(`🏷️ <b>${discount}% OFF</b>`);
+    lines.push(
+      `🏷️ <b>${discount}% OFF</b>`
+    );
   }
 
-  if (priceLine.length) {
-    lines.push(priceLine.join("   "));
-  }
-
-  const proofLine = [];
-
+  // Avaliação
   if (rating > 0) {
-    proofLine.push(`⭐ ${rating.toFixed(1)}`);
+    lines.push(
+      `⭐ ${rating.toFixed(1)} de 5`
+    );
   }
 
+  // Vendas
   if (sales > 0) {
-    proofLine.push(`🛒 ${sales.toLocaleString("pt-BR")} vendidos`);
+    lines.push(
+      `🛒 ${sales.toLocaleString("pt-BR")} vendidos`
+    );
   }
 
-  if (proofLine.length) {
-    lines.push(proofLine.join("  •  "));
-  }
-
+  // Link
   if (link) {
     lines.push("");
-    lines.push(`👉 <a href="${escapeHtml(link)}"><b>COMPRAR AGORA NA SHOPEE</b></a>`);
+    lines.push(
+      `👉 <a href="${escapeHtml(link)}"><b>COMPRAR AGORA NA SHOPEE</b></a>`
+    );
   }
 
   return lines.join("\n");
