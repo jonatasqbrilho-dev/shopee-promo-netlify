@@ -446,11 +446,8 @@ async function generatePromoText(product) {
       product?.productName || ""
     ).slice(0, 300);
 
-  const price =
-    moneyBRL(
-      product?.priceDiscount ??
-        product?.priceMin ??
-        0
+  const priceOf = (product) =>
+  number(product?.priceMin) || number(product?.priceMax) || 0;
     );
 
   const prompt = `
@@ -722,7 +719,7 @@ function formatPromotion(
     `🛍️ <b>${name}</b>`
   );
 
-  if (price !== "R$ 0,00") {
+  if  (min > 0) { {
     lines.push(
       `💰 <b>${price}</b>`
     );
@@ -809,7 +806,8 @@ function normalizeProduct(product) {
 
     priceDiscountRate:
       number(
-        product?.priceDiscountRate
+      priceMin: number(product?.priceMin),
+      priceMax: number(product?.priceMax),
       ),
 
     ratingStar:
@@ -1067,9 +1065,13 @@ export async function runBot({
 
       const caption =
         formatPromotion(
-          product,
-          promoText,
-          shortLink
+         const min = priceOf(product);
+const max = number(product?.priceMax);
+
+const price =
+  max > min && min > 0
+    ? `a partir de ${moneyBRL(min)}`
+    : moneyBRL(min);
         );
 
       try {
