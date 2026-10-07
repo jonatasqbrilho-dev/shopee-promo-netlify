@@ -1,92 +1,111 @@
-async function generatePromoText(product) {
-  const apiKey = env("GEMINI_API_KEY");
+import { createHash } from "node:crypto";
+import { getStore } from "@netlify/blobs";
 
-  if (!apiKey) {
-    console.error("GEMINI_API_KEY não configurada.");
-    return FALLBACK_TEXT;
+const env = (key, fallback = "") => process.env[key] ?? fallback;
+
+const SHOPEE_ENDPOINT = "https://open-api.affiliate.shopee.com.br/graphql";
+const SENT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const LOCK_TTL_MS = 2 * 60 * 1000;
+const STORE_NAME = "shopee-promo";
+const FALLBACK_TEXT = "🔥 Oferta encontrada na Shopee!";
+
+/* =========================================================
+   UTILITÁRIOS
+========================================================= */
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const jsonResponse = (body, status = 200) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+
+const escapeHtml = (value = "") =>
+  String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+
+const number = (value, fallback = 0) => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+};
+
+const integer = (value, fallback = 0) => {
+  const n = Number.parseInt(value, 10);
+  return Number.isFinite(n) ? n : fallback;
+};
+
+const moneyBRL = (value) =>
+  new Intl.NumberFormat("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+  }).format(number(value));
+
+// A API da Shopee devolve priceMin/priceMax já com o preço atual.
+const priceOf = (product) =>
+  number(product?.priceMin) || number(product?.priceMax) || 0;
+
+const discountOf = (product) => {
+  const direct = number(product?.priceDiscountRate);
+  if (direct > 0) {
+    return direct;
   }
+  return 0;
+};
 
-  const model = env("GEMINI_MODEL", "gemini-3.5-flash-lite");
-  const discount = Math.round(discountOf(product));
-  const productName = String(product?.productName || "").slice(0, 300);
-  const price = moneyBRL(priceOf(product));
+const productUrl = (product) =>
+  product?.productLink ||
+  product?.productUrl ||
+  product?.offerLink ||
+  product?.link ||
+  "";
 
-  const prompt = `
-Crie uma chamada curta e chamativa em português do Brasil para uma oferta da Shopee.
+const keywords = () =>
+  env(
+    "SHOPEE_KEYWORDS",
+    "eletronicos,casa,cozinha,ferramentas,celular,beleza,ofertas"
+  )
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
 
-Produto: ${productName}
-Preço: ${price}
-Desconto: ${discount}%
+const brasilHour = () => {
+  const now = new Date();
+  return Number(
+    new Intl.DateTimeFormat("pt-BR", {
+      timeZone: "America/Fortaleza",
+      hour: "2-digit",
+      hour12: false,
+    }).format(now)
+  );
+};
 
-Regras:
-- máximo de 90 caracteres;
-- não invente informações;
-- não diga "últimas unidades", "frete grátis" ou "menor preço";
-- pode usar 1 ou 2 emojis;
-- seja natural e vendedor;
-- não coloque link nem hashtags;
-- responda somente com a frase, sem aspas.
+const withinSchedule = () => {
+  const start = integer(env("BOT_START_HOUR", "8"), 8);
+  const end = integer(env("BOT_END_HOUR", "22"), 22);
+  const hour = brasilHour();
 
-Se o produto for perigoso, ilegal, adulto ou inadequado para divulgação, responda apenas: PULAR
-`;
-
-  const url =
-    "https://generativelanguage.googleapis.com/v1beta/models/" +
-    encodeURIComponent(model) +
-    ":generateContent?key=" +
-    encodeURIComponent(apiKey);
-
-  try {
-    const response = await fetch(url, {
-      signal: AbortSignal.timeout(10000),
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: {
-          parts: [
-            {
-              text: "Você cria textos curtos para promoções de e-commerce em português do Brasil.",
-            },
-          ],
-        },
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        generationConfig: {
-          maxOutputTokens: 300,
-        },
-      }),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("Gemini HTTP:", response.status, errorText);
-      return FALLBACK_TEXT;
-    }
-
-    const data = await response.json();
-    const candidate = data?.candidates?.[0];
-
-    const text = (candidate?.content?.parts || [])
-      .map((part) => part?.text || "")
-      .join("")
-      .trim()
-      .replace(/^["“]|["”]$/g, "");
-
-    if (!text) {
-      console.error(
-        "Gemini sem texto. finishReason:",
-        candidate?.finishReason,
-        JSON.stringify(data?.promptFeedback || {})
-      );
-      return FALLBACK_TEXT;
-    }
-
-    if (text.toUpperCase() === "PULAR") {
-      return "PULAR";
-    }
-
-    return text.slice(0, 120);
-  } catch (error) {
-    console.error("Erro Gemini:", error);
-    return FALLBACK_TEXT;
+  if (start === end) {
+    return true;
   }
-}
+  if (start < end) {
+    return hour >= start && hour < end;
+  }
+  return hour >= start || hour < end;
+};
+
+/* =========================================================
+   NETLIFY BLOBS
+========================================================= */
+
+const store = () =>
+  getStore({
+    name: STORE_NAME,
+    consistency: "strong",
+  });
+
+async function
